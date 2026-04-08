@@ -21,7 +21,7 @@ jobs:
           BUBBLE_APP_NAME:  ${{ secrets.BUBBLE_APP_NAME }}
           BUBBLE_API_TOKEN: ${{ secrets.BUBBLE_API_TOKEN }}
           BUBBLE_DATA_TYPE: ${{ secrets.BUBBLE_DATA_TYPE }}
-        run: python landrover_scraper.py
+        run: python landrover_scraper2.py
 
       - name: Salvar CSV de volta no repositório
         run: |
