@@ -30,7 +30,7 @@ SCRAPER_HEADERS = {
     ),
     "Accept-Language": "pt-BR,pt;q=0.9",
 }
-DELAY = 1.5  # segundos entre requisições ao site
+DELAY = 0.5  # segundos entre requisições ao site
 
 # ---------------------------------------------------------------------------
 # Configurações do Bubble (lidas de variáveis de ambiente)
@@ -140,8 +140,8 @@ def get_all_product_urls(model_url: str, session: requests.Session) -> list[str]
         for a in cards:
             href = a.get("href", "")
             if href and "/br/pt/" in href:
-                full = urljoin("https://accessories.landrover.com", href)
-                if full not in product_urls:
+                full = urljoin("https://accessories.landrover.com", href.split("#")[0])
+                if full not in product_urls and full not in new_urls:
                     new_urls.append(full)
 
         if not new_urls:
@@ -181,23 +181,39 @@ def scrape_product(url: str, familia: str, modelo: str, session: requests.Sessio
             codigo = code_el.get_text(strip=True)
 
     imagem_url = None
-    img_el = soup.select_one("div.image-container img, div[class*='image'] img")
-    if img_el:
-        src = img_el.get("src") or img_el.get("data-src")
-        if src:
-            imagem_url = urljoin("https://accessories.landrover.com", src)
 
+    # Prioridade 1: img com data-testid contendo o código do acessório
+    # Padrão: data-testid="VPLLE0052_feature_img"
+    if codigo:
+        testid = f"{codigo}_feature_img"
+        img_el = soup.find("img", {"data-testid": testid})
+        if img_el:
+            src = img_el.get("src") or img_el.get("data-src")
+            if src:
+                imagem_url = src  # URL já é absoluta (assets.config.landrover.com)
+
+    # Prioridade 2: qualquer img com data-testid terminando em _feature_img
     if not imagem_url:
-        lb_img = soup.select_one("section.lightbox img, ol img")
+        img_el = soup.find("img", {"data-testid": re.compile(r"_feature_img$")})
+        if img_el:
+            src = img_el.get("src") or img_el.get("data-src")
+            if src:
+                imagem_url = src
+
+    # Prioridade 3: img dentro do lightbox (ol > li > img)
+    if not imagem_url:
+        lb_img = soup.select_one("section.lightbox ol li img")
         if lb_img:
             src = lb_img.get("src") or lb_img.get("data-src")
             if src:
                 imagem_url = urljoin("https://accessories.landrover.com", src)
 
+    # Prioridade 4: img em assets.config.landrover.com (imagens de acessório)
     if not imagem_url:
         for img in soup.find_all("img", src=True):
-            if "catalog-assets" in img["src"]:
-                imagem_url = urljoin("https://accessories.landrover.com", img["src"])
+            src = img["src"]
+            if "assets.config.landrover.com" in src and "/accessories/" in src:
+                imagem_url = src
                 break
 
     return {
