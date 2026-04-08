@@ -122,6 +122,38 @@ def get_models(brand: dict, session: requests.Session) -> list[dict]:
     return models
 
 
+
+
+def get_model_image(model_url: str, session: requests.Session) -> str:
+    """
+    Busca a imagem principal do modelo na página de listagem.
+    Tenta capturar a imagem do banner/hero ou a primeira imagem de destaque do veículo.
+    """
+    soup = get_soup(model_url, session)
+    if not soup:
+        return ""
+
+    # Prioridade 1: imagem no banner/section stealth (hero do modelo)
+    img = soup.select_one("section.banner-stealth img, section[class*='banner'] img")
+    if img:
+        src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
+        if src:
+            return urljoin("https://accessories.landrover.com", src)
+
+    # Prioridade 2: og:image (meta tag — sempre tem a imagem principal do modelo)
+    og = soup.find("meta", {"property": "og:image"})
+    if og and og.get("content"):
+        return og["content"]
+
+    # Prioridade 3: primeira img com src de assets do veículo
+    for img in soup.find_all("img", src=True):
+        src = img["src"]
+        if any(k in src for k in ["assets.config.landrover.com", "i.imgur", "media"]):
+            if "accessories" not in src:  # evita pegar imagem de acessório
+                return urljoin("https://accessories.landrover.com", src)
+
+    return ""
+
 def get_all_product_urls(model_url: str, session: requests.Session) -> list[str]:
     product_urls = []
     page = 1
@@ -219,6 +251,7 @@ def scrape_product(url: str, familia: str, modelo: str, session: requests.Sessio
     return {
         "familia": familia,
         "modelo": modelo,
+        "model_image_url": "",  # preenchido no main após get_model_image
         "codigo": codigo or "",
         "imagem_url": imagem_url or "",
     }
@@ -235,6 +268,7 @@ def send_to_bubble(row: dict) -> bool:
     payload = {
         "familia": row["familia"],
         "modelo": row["modelo"],
+        "model_image_url": row.get("model_image_url", ""),
         "codigo": row["codigo"],
         "imagem_url": row["imagem_url"],
     }
@@ -259,7 +293,7 @@ def send_to_bubble(row: dict) -> bool:
 
 def main():
     output_file = "landrover_acessorios.csv"
-    fieldnames = ["familia", "modelo", "codigo", "imagem_url"]
+    fieldnames = ["familia", "modelo", "model_image_url", "codigo", "imagem_url"]
 
     bubble_ativo = bool(BUBBLE_BASE_URL and BUBBLE_API_TOKEN)
     if bubble_ativo:
@@ -268,7 +302,7 @@ def main():
         print("⚠️  Bubble não configurado — apenas CSV será gerado.")
 
     with requests.Session() as session, open(output_file, "w", newline="", encoding="utf-8") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames, delimiter=";")
         writer.writeheader()
 
         total_ok = 0
@@ -293,6 +327,9 @@ def main():
                 print(f"\n  Modelo: {model['modelo']}")
                 time.sleep(DELAY)
 
+                model_image = get_model_image(model["url"], session)
+                print(f"  Imagem do modelo: {model_image or 'não encontrada'}")
+
                 product_urls = get_all_product_urls(model["url"], session)
                 print(f"  Total produtos no modelo: {len(product_urls)}")
 
@@ -301,6 +338,7 @@ def main():
                     row = scrape_product(prod_url, brand["familia"], model["modelo"], session)
 
                     if row:
+                        row["model_image_url"] = model_image
                         writer.writerow(row)
                         csvfile.flush()
                         total_ok += 1
