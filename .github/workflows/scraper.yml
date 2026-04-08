@@ -2,47 +2,39 @@ name: Land Rover Scraper Semanal
 
 on:
   schedule:
-    - cron: '0 8 * * 1'
-  workflow_dispatch:
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    - cron: '0 8 * * 1'  # toda segunda-feira às 08:00 UTC (05:00 horário de Brasília)
+  workflow_dispatch:       # permite rodar manualmente pela aba Actions
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
 
     steps:
-      - name: Checkout
+      - name: Baixar repositório
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Instalar dependências
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
+      - name: Instalar dependências Python
+        run: pip install requests beautifulsoup4
 
       - name: Rodar scraper
-        run: python landrover_scraper2.py
+        env:
+          BUBBLE_APP_NAME:  ${{ secrets.BUBBLE_APP_NAME }}
+          BUBBLE_API_TOKEN: ${{ secrets.BUBBLE_API_TOKEN }}
+          BUBBLE_DATA_TYPE: ${{ secrets.BUBBLE_DATA_TYPE }}
+        run: python landrover_scraper.py
 
-      - name: Commit CSV
+      - name: Verificar se CSV foi gerado
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          FILE="landrover_acessorios.csv"
-
-          if [ -f "$FILE" ]; then
-            git add $FILE
-            git diff --cached --quiet || git commit -m "update CSV $(date)"
-            git push
-          else
-            echo "CSV não encontrado"
+          if [ ! -f landrover_acessorios.csv ]; then
+            echo "❌ landrover_acessorios.csv não foi gerado pelo script"
             exit 1
           fi
+          echo "✅ CSV gerado com $(wc -l < landrover_acessorios.csv) linhas"
+
+      - name: Salvar CSV de volta no repositório
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add landrover_acessorios.csv
+          git diff --cached --quiet || git commit -m "chore: atualiza CSV $(date +'%Y-%m-%d')"
+          git push
