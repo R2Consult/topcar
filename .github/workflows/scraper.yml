@@ -2,19 +2,22 @@ name: Land Rover Scraper Semanal
 
 on:
   schedule:
-    - cron: '0 8 * * 1'  # Segunda 08:00 UTC (05:00 BR)
+    - cron: '0 8 * * 1'
   workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 60  # evita travar indefinidamente
+    timeout-minutes: 60
 
     steps:
-      - name: Checkout repositório
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configurar Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -23,37 +26,23 @@ jobs:
       - name: Instalar dependências
         run: |
           pip install --upgrade pip
-          pip install requests beautifulsoup4
+          pip install -r requirements.txt
 
       - name: Rodar scraper
-        env:
-          BUBBLE_APP_NAME: ${{ secrets.BUBBLE_APP_NAME }}
-          BUBBLE_API_TOKEN: ${{ secrets.BUBBLE_API_TOKEN }}
-          BUBBLE_DATA_TYPE: ${{ secrets.BUBBLE_DATA_TYPE }}
-        run: |
-          echo "🚀 Iniciando scraper..."
-          python landrover_scraper2.py
-          echo "✅ Scraper finalizado"
+        run: python landrover_scraper2.py
 
-      - name: Verificar arquivos gerados
-        run: |
-          echo "📂 Arquivos no diretório:"
-          ls -lh
-
-      - name: Commit e push do CSV
+      - name: Commit CSV
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # ajuste aqui conforme o nome correto do arquivo
           FILE="landrover_acessorios.csv"
 
           if [ -f "$FILE" ]; then
             git add $FILE
-            git diff --cached --quiet || git commit -m "chore: atualiza CSV $(date +'%Y-%m-%d %H:%M')"
+            git diff --cached --quiet || git commit -m "update CSV $(date)"
             git push
-            echo "✅ CSV atualizado no repositório"
           else
-            echo "⚠️ Arquivo CSV não encontrado!"
+            echo "CSV não encontrado"
             exit 1
           fi
