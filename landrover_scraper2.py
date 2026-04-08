@@ -278,7 +278,7 @@ def main():
 
     print("🔗 Bubble ativo" if bubble_ativo else "⚠️  Bubble não configurado — apenas CSV")
 
-    with open("output.csv", "w", newline="", encoding="utf-8") as f:
+    with open("landrover_acessorios.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
             fieldnames=["familia", "modelo", "model_image_url", "codigo", "imagem_url"],
