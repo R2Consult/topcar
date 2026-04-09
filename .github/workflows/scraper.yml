@@ -2,7 +2,7 @@ name: Land Rover Scraper Semanal
 
 on:
   schedule:
-    - cron: '0 8 * * 1'  # toda segunda-feira às 08:00 UTC (05:00 horário de Brasília)
+    - cron: '0 6 * * 1'  # toda segunda-feira às 06:00 UTC (03:00 horário de Brasília)
   workflow_dispatch:       # permite rodar manualmente pela aba Actions
 
 jobs:
