@@ -1,246 +1,201 @@
-"""
-Land Rover Accessories Scraper + Bubble.io Importer
-Gera CSV com: familia, modelo, codigo, imagem_url
-E envia cada registro direto para o Bubble via Data API.
-
-Variáveis de ambiente necessárias:
-  BUBBLE_APP_NAME  → nome do seu app (ex: meuapp)
-  BUBBLE_API_TOKEN → token gerado em Settings > API no Bubble
-  BUBBLE_DATA_TYPE → nome do Data Type no Bubble (ex: Acessorio)
-"""
-
 import csv
+import json
 import os
 import re
 import time
-
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse, parse_qs
+from urllib.parse import urljoin, urlparse, parse_qs, urlencode
 
 # ---------------------------------------------------------------------------
-# Configurações do scraper
+# CONFIG
 # ---------------------------------------------------------------------------
 BASE_URL = "https://accessories.landrover.com/br/pt/"
-SCRAPER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "pt-BR,pt;q=0.9",
-}
-DELAY = 0.5  # segundos entre requisições ao site
+DELAY = 0.3
 
-# ---------------------------------------------------------------------------
-# Configurações do Bubble (lidas de variáveis de ambiente)
-# ---------------------------------------------------------------------------
 BUBBLE_APP_NAME  = os.environ.get("BUBBLE_APP_NAME", "")
 BUBBLE_API_TOKEN = os.environ.get("BUBBLE_API_TOKEN", "")
 BUBBLE_DATA_TYPE = os.environ.get("BUBBLE_DATA_TYPE", "")
 
-BUBBLE_BASE_URL = (
+BUBBLE_URL = (
     f"https://{BUBBLE_APP_NAME}.bubbleapps.io/api/1.1/obj/{BUBBLE_DATA_TYPE}"
-    if BUBBLE_APP_NAME and BUBBLE_DATA_TYPE
-    else ""
+    if BUBBLE_APP_NAME and BUBBLE_DATA_TYPE else ""
 )
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept-Language": "pt-BR,pt;q=0.9",
+}
 
 BUBBLE_HEADERS = {
     "Authorization": f"Bearer {BUBBLE_API_TOKEN}",
     "Content-Type": "application/json",
 }
 
-
 # ---------------------------------------------------------------------------
-# Funções do scraper
+# UTIL
 # ---------------------------------------------------------------------------
 
-def get_soup(url: str, session: requests.Session) -> BeautifulSoup | None:
+def clean(value):
+    if not value:
+        return ""
+    return str(value).replace("\n", "").replace("\r", "").replace("\t", "").strip()
+
+def clean_url(value):
+    """Limpa e valida uma URL — retorna vazia se não começar com http."""
+    v = clean(value)
+    if v and v.startswith("http"):
+        return v
+    return ""  
+
+def get_soup(url, session):
     try:
-        resp = session.get(url, headers=SCRAPER_HEADERS, timeout=15)
-        resp.raise_for_status()
-        return BeautifulSoup(resp.text, "html.parser")
-    except requests.RequestException as e:
-        print(f"  [ERRO scraper] {url} → {e}")
+        r = session.get(url, headers=HEADERS, timeout=15)
+        r.raise_for_status()
+        return BeautifulSoup(r.text, "html.parser")
+    except:
         return None
 
+# ---------------------------------------------------------------------------
+# SCRAPER
+# ---------------------------------------------------------------------------
 
-def get_brands(session: requests.Session) -> list[dict]:
+def get_brands(session):
     soup = get_soup(BASE_URL, session)
-    if not soup:
-        return []
-
     brands = []
+    if not soup:
+        return brands
+
     for a in soup.find_all("a", href=True):
         href = a["href"]
         if "brand=" not in href:
             continue
         parsed = urlparse(href)
-        path_parts = [p for p in parsed.path.strip("/").split("/") if p]
-        if len(path_parts) > 2:
+        parts = [p for p in parsed.path.strip("/").split("/") if p]
+        if len(parts) > 2:
             continue
         qs = parse_qs(parsed.query)
-        brand_val = qs.get("brand", [None])[0]
-        if brand_val and not any(b["brand"] == brand_val for b in brands):
-            full_url = urljoin(BASE_URL, href)
-            brands.append({"familia": brand_val, "brand": brand_val, "url": full_url})
+        brand = qs.get("brand", [None])[0]
+        if brand and brand not in [b["brand"] for b in brands]:
+            brands.append({
+                "familia": brand,
+                "brand": brand,
+                "url": urljoin(BASE_URL, href)
+            })
 
-    if not brands:
-        for link in soup.select("nav a[href*='brand=']"):
-            href = link["href"]
-            qs = parse_qs(urlparse(href).query)
-            brand_val = qs.get("brand", [None])[0]
-            if brand_val and not any(b["brand"] == brand_val for b in brands):
-                full_url = urljoin(BASE_URL, href)
-                brands.append({"familia": brand_val, "brand": brand_val, "url": full_url})
-
-    print(f"Famílias encontradas: {[b['brand'] for b in brands]}")
     return brands
 
 
-def get_models(brand: dict, session: requests.Session) -> list[dict]:
+def get_models(brand, session):
     soup = get_soup(brand["url"], session)
-    if not soup:
-        return []
-
     models = []
-    brand_val = brand["brand"]
+    if not soup:
+        return models
 
+    brand_val = brand["brand"]
     for a in soup.find_all("a", href=True):
-        href = a["href"]
-        parsed = urlparse(href)
-        path_parts = [p for p in parsed.path.strip("/").split("/") if p]
-        if len(path_parts) == 3 and path_parts[0] == "br" and path_parts[1] == "pt":
-            modelo_slug = path_parts[2]
+        parsed = urlparse(a["href"])
+        parts = [p for p in parsed.path.strip("/").split("/") if p]
+        if len(parts) == 3 and parts[0] == "br" and parts[1] == "pt":
+            modelo = parts[2]
             qs = parse_qs(parsed.query)
             if qs.get("brand", [None])[0] == brand_val:
-                full_url = urljoin("https://accessories.landrover.com", href)
-                if not any(m["modelo"] == modelo_slug for m in models):
-                    models.append({"modelo": modelo_slug, "url": full_url})
+                if modelo not in [m["modelo"] for m in models]:
+                    models.append({
+                        "modelo": modelo,
+                        "url": urljoin("https://accessories.landrover.com", a["href"])
+                    })
 
-    print(f"  Modelos para {brand_val}: {[m['modelo'] for m in models]}")
     return models
 
 
-
-
-def get_model_image(model_url: str, session: requests.Session) -> str:
-    """
-    Busca a imagem principal do modelo na página de listagem.
-    Tenta capturar a imagem do banner/hero ou a primeira imagem de destaque do veículo.
-    """
+def get_model_image(model_url, session):
+    """Busca a imagem principal do modelo na página de listagem."""
     soup = get_soup(model_url, session)
     if not soup:
         return ""
 
-    # Prioridade 1: imagem no banner/section stealth (hero do modelo)
-    img = soup.select_one("section.banner-stealth img, section[class*='banner'] img")
-    if img:
-        src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
-        if src:
-            return urljoin("https://accessories.landrover.com", src)
-
-    # Prioridade 2: og:image (meta tag — sempre tem a imagem principal do modelo)
+    # Prioridade 1: og:image (meta tag — imagem principal do modelo)
     og = soup.find("meta", {"property": "og:image"})
     if og and og.get("content"):
         return og["content"]
 
-    # Prioridade 3: primeira img com src de assets do veículo
+    # Prioridade 2: banner/hero da página
+    img = soup.select_one("section.banner-stealth img, section[class*='banner'] img")
+    if img:
+        src = img.get("src") or img.get("data-src")
+        if src:
+            return urljoin("https://accessories.landrover.com", src)
+
+    # Prioridade 3: primeira img de assets do veículo (não de acessório)
     for img in soup.find_all("img", src=True):
         src = img["src"]
-        if any(k in src for k in ["assets.config.landrover.com", "i.imgur", "media"]):
-            if "accessories" not in src:  # evita pegar imagem de acessório
-                return urljoin("https://accessories.landrover.com", src)
+        if "assets.config.landrover.com" in src and "/accessories/" not in src:
+            return src
 
     return ""
 
-def get_all_product_urls(model_url: str, session: requests.Session) -> list[str]:
-    product_urls = []
+
+def get_products(model_url, session):
+    urls = set()
     page = 1
 
     while True:
-        url = f"{model_url}&page={page}" if "?" in model_url else f"{model_url}?page={page}"
+        sep = "&" if "?" in model_url else "?"
+        url = f"{model_url}{sep}page={page}"
         soup = get_soup(url, session)
         if not soup:
             break
 
-        cards = soup.select("div.card a.card-contents, div.card > a[href]")
-        if not cards:
-            cards = soup.select("ul.grid li a[href*='/br/pt/']")
-
-        new_urls = []
-        for a in cards:
+        found = 0
+        for a in soup.select("a[href*='/br/pt/']"):
             href = a.get("href", "")
-            if href and "/br/pt/" in href:
-                full = urljoin("https://accessories.landrover.com", href.split("#")[0])
-                if full not in product_urls and full not in new_urls:
-                    new_urls.append(full)
+            # remove fragmento #tab-section para evitar duplicatas
+            clean_href = href.split("#")[0]
+            full = urljoin("https://accessories.landrover.com", clean_href)
+            if full not in urls:
+                urls.add(full)
+                found += 1
 
-        if not new_urls:
-            break
-
-        product_urls.extend(new_urls)
-        print(f"    Página {page}: {len(new_urls)} produtos encontrados")
-
-        next_btn = soup.select_one("a[rel='next'], a.pagination__next, li.next a")
-        if not next_btn:
+        if found == 0:
             break
 
         page += 1
         time.sleep(DELAY)
 
-    return product_urls
+    return list(urls)
 
 
-def scrape_product(url: str, familia: str, modelo: str, session: requests.Session) -> dict | None:
+def scrape_product(url, familia, modelo, model_image, session):
     soup = get_soup(url, session)
     if not soup:
         return None
 
+    # Código do acessório
     codigo = None
     for strong in soup.find_all("strong"):
-        if "Número do acessório" in strong.get_text() or "Numero do acessorio" in strong.get_text():
-            parent = strong.parent
-            full_text = parent.get_text(separator=" ", strip=True)
-            match = re.search(r"Número do acessório\s*[:\u00a0]+\s*([A-Z0-9]+)", full_text, re.IGNORECASE)
+        if "acessório" in strong.text.lower() or "acessorio" in strong.text.lower():
+            match = re.search(r"([A-Z0-9]{5,})", strong.parent.get_text())
             if match:
-                codigo = match.group(1).strip()
+                codigo = match.group(1)
                 break
 
-    if not codigo:
-        code_el = soup.select_one("p.code, [class*='code']")
-        if code_el:
-            codigo = code_el.get_text(strip=True)
+    # Imagem do acessório
+    imagem_url = ""
 
-    imagem_url = None
-
-    # Prioridade 1: img com data-testid contendo o código do acessório
-    # Padrão: data-testid="VPLLE0052_feature_img"
+    # Prioridade 1: data-testid com código do acessório
     if codigo:
-        testid = f"{codigo}_feature_img"
-        img_el = soup.find("img", {"data-testid": testid})
+        img_el = soup.find("img", {"data-testid": f"{codigo}_feature_img"})
         if img_el:
-            src = img_el.get("src") or img_el.get("data-src")
-            if src:
-                imagem_url = src  # URL já é absoluta (assets.config.landrover.com)
+            imagem_url = img_el.get("src") or img_el.get("data-src") or ""
 
-    # Prioridade 2: qualquer img com data-testid terminando em _feature_img
+    # Prioridade 2: qualquer data-testid terminando em _feature_img
     if not imagem_url:
         img_el = soup.find("img", {"data-testid": re.compile(r"_feature_img$")})
         if img_el:
-            src = img_el.get("src") or img_el.get("data-src")
-            if src:
-                imagem_url = src
+            imagem_url = img_el.get("src") or img_el.get("data-src") or ""
 
-    # Prioridade 3: img dentro do lightbox (ol > li > img)
-    if not imagem_url:
-        lb_img = soup.select_one("section.lightbox ol li img")
-        if lb_img:
-            src = lb_img.get("src") or lb_img.get("data-src")
-            if src:
-                imagem_url = urljoin("https://accessories.landrover.com", src)
-
-    # Prioridade 4: img em assets.config.landrover.com (imagens de acessório)
+    # Prioridade 3: img em assets.config.landrover.com/accessories/
     if not imagem_url:
         for img in soup.find_all("img", src=True):
             src = img["src"]
@@ -248,114 +203,163 @@ def scrape_product(url: str, familia: str, modelo: str, session: requests.Sessio
                 imagem_url = src
                 break
 
+    # Prioridade 4: lightbox
+    if not imagem_url:
+        lb_img = soup.select_one("section.lightbox ol li img")
+        if lb_img:
+            src = lb_img.get("src") or lb_img.get("data-src") or ""
+            if src:
+                imagem_url = urljoin("https://accessories.landrover.com", src)
+
+    # Nome do produto (part_name) — tag h1
+    part_name = ""
+    h1 = soup.select_one("h1")
+    if h1:
+        part_name = h1.get_text(strip=True)
+
+    # Descrição — parágrafo dentro de section.part-summary ou div[class*='description']
+    descricao = ""
+    # Prioridade 1: section.part-summary > div.text-container > p (sem class code)
+    for p in soup.select("section.part-summary p"):
+        txt = p.get_text(strip=True)
+        if txt and len(txt) > 30:  # ignora textos curtos como códigos
+            descricao = txt
+            break
+    # Prioridade 2: qualquer div com "description" no class
+    if not descricao:
+        desc_el = soup.select_one("div[class*='description'] p, div[class*='desc'] p")
+        if desc_el:
+            descricao = desc_el.get_text(strip=True)
+    # Prioridade 3: primeiro parágrafo longo da página
+    if not descricao:
+        for p in soup.find_all("p"):
+            txt = p.get_text(strip=True)
+            if len(txt) > 80:
+                descricao = txt
+                break
+
     return {
-        "familia": familia,
-        "modelo": modelo,
-        "model_image_url": "",  # preenchido no main após get_model_image
-        "codigo": codigo or "",
-        "imagem_url": imagem_url or "",
+        "familia":         clean(familia),
+        "modelo":          clean(modelo),
+        "model_image_url": clean_url(model_image),
+        "codigo":          clean(codigo),
+        "part_name":       clean(part_name),
+        "descricao":       clean(descricao),
+        "imagem_url":      clean_url(imagem_url),
     }
 
-
 # ---------------------------------------------------------------------------
-# Integração com Bubble
+# BUBBLE
 # ---------------------------------------------------------------------------
 
-def send_to_bubble(row: dict) -> bool:
-    if not BUBBLE_BASE_URL or not BUBBLE_API_TOKEN:
+def exists_in_bubble(codigo):
+    """Verifica se o código já existe no Bubble usando constraints corretamente."""
+    if not codigo or not BUBBLE_URL:
+        return False
+
+    # constraints deve ser JSON serializado e passado como parâmetro
+    constraints = json.dumps([{
+        "key": "codigo",
+        "constraint_type": "equals",
+        "value": codigo
+    }])
+
+    try:
+        r = requests.get(
+            BUBBLE_URL,
+            params={"constraints": constraints},
+            headers=BUBBLE_HEADERS,
+            timeout=10
+        )
+        if r.status_code == 200:
+            return r.json()["response"]["count"] > 0
+    except:
+        pass
+
+    return False
+
+
+def send_to_bubble(row):
+    """Envia registro para o Bubble com retry automático."""
+    if not BUBBLE_URL or not BUBBLE_API_TOKEN:
         return False
 
     payload = {
-        "familia": row["familia"],
-        "modelo": row["modelo"],
-        "model_image_url": row.get("model_image_url", ""),
-        "codigo": row["codigo"],
-        "imagem_url": row["imagem_url"],
+        "familia":         row["familia"],
+        "modelo":          row["modelo"],
+        "model_image_url": row["model_image_url"],
+        "codigo":          row["codigo"],
+        "part_name":       row["part_name"],
+        "descricao":       row["descricao"],
+        "imagem_url":      row["imagem_url"],
     }
 
-    try:
-        resp = requests.post(BUBBLE_BASE_URL, json=payload, headers=BUBBLE_HEADERS, timeout=15)
-        if resp.status_code in (200, 201):
-            data = resp.json()
-            print(f"      → Bubble OK | id: {data.get('id', 'n/a')}")
-            return True
-        else:
-            print(f"      → Bubble ERRO {resp.status_code}: {resp.text[:200]}")
-            return False
-    except requests.RequestException as e:
-        print(f"      → Bubble EXCEÇÃO: {e}")
-        return False
+    for attempt in range(3):
+        try:
+            r = requests.post(BUBBLE_URL, json=payload, headers=BUBBLE_HEADERS, timeout=10)
+            if r.status_code in [200, 201]:
+                return True
+            print(f"      Bubble erro {r.status_code}: {r.text[:150]}")
+        except Exception as e:
+            print(f"      Bubble exceção: {e}")
+        time.sleep(1)
 
+    return False
 
 # ---------------------------------------------------------------------------
-# Main
+# MAIN
 # ---------------------------------------------------------------------------
 
 def main():
-    output_file = "landrover_acessorios.csv"
-    fieldnames = ["familia", "modelo", "model_image_url", "codigo", "imagem_url"]
+    session = requests.Session()
+    bubble_ativo = bool(BUBBLE_URL and BUBBLE_API_TOKEN)
 
-    bubble_ativo = bool(BUBBLE_BASE_URL and BUBBLE_API_TOKEN)
-    if bubble_ativo:
-        print(f"🔗 Bubble ativo → {BUBBLE_BASE_URL}")
-    else:
-        print("⚠️  Bubble não configurado — apenas CSV será gerado.")
+    print("🔗 Bubble ativo" if bubble_ativo else "⚠️  Bubble não configurado — apenas CSV")
 
-    with requests.Session() as session, open(output_file, "w", newline="", encoding="utf-8") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames, delimiter=";")
+    with open("landrover_acessorios.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["familia", "modelo", "model_image_url", "codigo", "part_name", "descricao", "imagem_url"],
+            delimiter=";",
+            quoting=csv.QUOTE_ALL
+        )
         writer.writeheader()
 
-        total_ok = 0
-        total_bubble_ok = 0
-        total_bubble_err = 0
+        total = 0
 
-        brands = get_brands(session)
-        if not brands:
-            print("Nenhuma família encontrada. Verifique a estrutura do site.")
-            return
-
-        for brand in brands:
-            print(f"\n=== Família: {brand['brand']} ===")
+        for brand in get_brands(session):
+            print(f"\n=== {brand['familia']} ===")
             time.sleep(DELAY)
 
-            models = get_models(brand, session)
-            if not models:
-                print("  Nenhum modelo encontrado.")
-                continue
-
-            for model in models:
-                print(f"\n  Modelo: {model['modelo']}")
+            for model in get_models(brand, session):
+                print(f"  -> {model['modelo']}")
                 time.sleep(DELAY)
 
                 model_image = get_model_image(model["url"], session)
-                print(f"  Imagem do modelo: {model_image or 'não encontrada'}")
+                print(f"     model_image: {model_image or 'não encontrada'}")
 
-                product_urls = get_all_product_urls(model["url"], session)
-                print(f"  Total produtos no modelo: {len(product_urls)}")
+                products = get_products(model["url"], session)
+                print(f"     {len(products)} produtos encontrados")
 
-                for i, prod_url in enumerate(product_urls, 1):
-                    print(f"    [{i}/{len(product_urls)}] {prod_url}")
-                    row = scrape_product(prod_url, brand["familia"], model["modelo"], session)
+                for url in products:
+                    row = scrape_product(url, brand["familia"], model["modelo"], model_image, session)
 
-                    if row:
-                        row["model_image_url"] = model_image
-                        writer.writerow(row)
-                        csvfile.flush()
-                        total_ok += 1
+                    if not row or not row["codigo"]:
+                        continue
 
-                        if bubble_ativo:
-                            ok = send_to_bubble(row)
-                            if ok:
-                                total_bubble_ok += 1
-                            else:
-                                total_bubble_err += 1
+                    writer.writerow(row)
+                    f.flush()
 
+                    if bubble_ativo:
+                        ok = send_to_bubble(row)
+                        print(f"    {'OK' if ok else 'ERRO'} - {row['codigo']}")
+                    else:
+                        print(f"    CSV - {row['codigo']}")
+
+                    total += 1
                     time.sleep(DELAY)
 
-    print(f"\n✅ Concluído!")
-    print(f"   CSV: {total_ok} produtos salvos em '{output_file}'")
-    if bubble_ativo:
-        print(f"   Bubble: {total_bubble_ok} enviados com sucesso, {total_bubble_err} erros")
+    print(f"\n✅ FINALIZADO - {total} itens")
 
 
 if __name__ == "__main__":
